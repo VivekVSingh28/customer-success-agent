@@ -1,0 +1,49 @@
+# Core Flask Framework
+Flask==2.3.3
+Flask-CORS==4.0.0
+# WebSocket Support for Real-time Communication
+Flask-SocketIO==5.3.6
+python-socketio==5.8.0
+python-engineio==4.8.0 # Often a dependency of Flask-SocketIO, good to be explicit
+
+# Environment Variables Management
+python-dotenv==1.0.0
+
+# HTTP Client Library for API Calls
+requests==2.31.0
+
+# JSON Web Token Support (for potential authentication/session tokens)
+PyJWT==2.8.0
+
+# Audio Processing Libraries (useful if backend needs to manipulate audio chunks)
+pydub==0.25.1
+mutagen==1.47.0
+
+# Async Support (crucial for Flask-SocketIO performance with WebSockets)
+eventlet==0.33.3
+
+# Logging and Error Handling (more structured logging)
+structlog==23.1.0
+
+# Data Validation and Serialization (for API request/response handling)
+marshmallow==3.20.1
+
+# HTTP Status Code helpers (optional, but can be useful)
+http-status==1.0.0
+
+# WebSocket Client (useful for CLI testing of WebSocket connections)
+websocket-client==1.6.3
+
+# For accurate token counting in LLM context management
+tiktoken==0.7.0 # Or the latest stable version (check PyPI for latest)
+
+# Development and Testing Dependencies
+pytest==7.4.2
+pytest-flask==1.2.0
+black==23.7.0 # Code formatter
+flake8==6.0.0 # Linter
+
+# Optional: Redis for session storage (if needed for scaling/distributed sessions)
+# Uncomment if you decide to implement Redis for session management
+# redis==5.0.0
+# Flask-Session==0.5.0
