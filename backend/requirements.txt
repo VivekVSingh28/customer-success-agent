@@ -37,6 +37,9 @@ websocket-client==1.6.3
 # For accurate token counting in LLM context management
 tiktoken==0.7.0 # Or the latest stable version (check PyPI for latest)
 
+# NumPy for CLI testing audio generation
+numpy==1.24.3
+
 # Development and Testing Dependencies
 pytest==7.4.2
 pytest-flask==1.2.0
