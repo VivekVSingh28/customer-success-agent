@@ -367,29 +367,26 @@ class MurfAPIClient:
 
         # IMPORTANT: The request payload for the streaming endpoint might be different
         # from the non-streaming one. Assuming a JSON payload with 'text' and voice config.
-        # Verify this with Murf's specific streaming API documentation.
-        request_data = {
-            'text': text,
-            'voice_id': config['voice_id'],
-            'audio_format': config['audio_format'],
-            'speed': config['speed'],
-            'pitch': config['pitch'],
-            'volume': config['volume'],
-            'sample_rate': config['sample_rate'],
-            # Add any other parameters specific to the streaming endpoint
+        # Use the exact payload format from your working previous project
+        payload = {
+            "voiceId": config['voice_id'],
+            "text": text,
+            "format": "mp3",
+            "streaming": True
         }
         
-        # Headers for streaming might also be specific.
-        # Assuming application/json for request, and raw audio bytes for response.
-        streaming_headers = self.headers.copy()
-        streaming_headers['Accept'] = f'audio/{config["audio_format"]}' # Request raw audio stream
+        # Use the same headers as your working project (no extra Accept header)
+        headers = {
+            "api-key": self.api_key,
+            "Content-Type": "application/json"
+        }
 
         try:
-            # Use the dedicated streaming URL
+            # Use the dedicated streaming URL with exact format from working project
             response = requests.post(
                 url=self.stream_url,
-                headers=streaming_headers, # Use specific streaming headers
-                json=request_data,
+                headers=headers,
+                json=payload,
                 timeout=self.timeout,
                 stream=True # Essential for streaming response from requests library
             )

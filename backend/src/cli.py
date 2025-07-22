@@ -278,31 +278,27 @@ def initialize_services():
         print_error(f"Failed to initialize Session Manager: {str(e)}")
 
 def test_llm_service():
-    """Test LLM service functionality"""
-    print_section("Testing LLM Service", "🧠")
+    """Test OpenAI GPT Service"""
+    print_section("Testing OpenAI GPT Service", "🧠")
     
     if not cli_state['llm_client']:
-        print_error("LLM Client not initialized")
+        print_error("OpenAI GPT Client not initialized")
         return
     
-    conversation_id = None
-    
-    # Test 1: Create conversation
+    # Test conversation creation
     print_info("Creating conversation...")
     start_time = time.time()
     try:
         customer_info = {
             'name': 'Test User',
             'email': 'test@example.com',
-            'plan': 'Premium',
-            'issue_type': 'Technical Support'
+            'plan': 'premium'
         }
-        conversation_id = cli_state['llm_client'].create_conversation(customer_info=customer_info)
+        conversation_id = cli_state['llm_client'].create_conversation(customer_info)
         duration = time.time() - start_time
-        record_test_result("LLM Create Conversation", True, f"Conversation ID: {conversation_id[:8]}...", duration)
+        print_success(f"OpenAI GPT Create Conversation: Conversation ID: {conversation_id[:12]}...", duration)
     except Exception as e:
-        duration = time.time() - start_time
-        record_test_result("LLM Create Conversation", False, f"Error: {str(e)}", duration)
+        print_error(f"OpenAI GPT Create Conversation: {str(e)}")
         return
     
     # Test 2: Chat completion
@@ -674,6 +670,115 @@ def print_test_summary():
     
     print(f"\n{Colors.CYAN}🕐 Test completed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{Colors.RESET}")
 
+def test_handoff_analysis():
+    """Test handoff analysis functionality"""
+    print_section("Testing Handoff Analysis", "🤝")
+    
+    if not cli_state['llm_client']:
+        print_error("LLM Client not initialized")
+        return
+    
+    # Create a conversation for testing
+    print_info("Creating conversation for handoff testing...")
+    start_time = time.time()
+    try:
+        customer_info = {
+            'name': 'Test Customer',
+            'email': 'test@example.com',
+            'plan': 'Premium',
+            'issue_type': 'Support Request'
+        }
+        conversation_id = cli_state['llm_client'].create_conversation(customer_info=customer_info)
+        duration = time.time() - start_time
+        record_test_result("Handoff Conversation Setup", True, f"Conversation ID: {conversation_id[:8]}...", duration)
+    except Exception as e:
+        duration = time.time() - start_time
+        record_test_result("Handoff Conversation Setup", False, f"Error: {str(e)}", duration)
+        return
+    
+    # Test scenarios that should trigger handoff
+    handoff_test_cases = [
+        {
+            'message': "I want a refund for my subscription, this is ridiculous!",
+            'expected_handoff': True,
+            'description': "Refund Request"
+        },
+        {
+            'message': "I can't access my account and I've tried everything. This is urgent!",
+            'expected_handoff': True,
+            'description': "Account Access Issue"
+        },
+        {
+            'message': "What are your business hours?",
+            'expected_handoff': False,
+            'description': "General Inquiry"
+        },
+        {
+            'message': "I need to speak to a manager immediately. This service is terrible!",
+            'expected_handoff': True,
+            'description': "Escalation Request"
+        }
+    ]
+    
+    for i, test_case in enumerate(handoff_test_cases, 1):
+        print_info(f"Testing handoff scenario {i}: {test_case['description']}")
+        start_time = time.time()
+        
+        try:
+            # Add some conversation context first
+            cli_state['llm_client'].chat_completion(
+                message="Hello, I need some help with my account.",
+                conversation_id=conversation_id
+            )
+            
+            # Now test the handoff analysis
+            handoff_result = cli_state['llm_client'].analyze_handoff_need(
+                conversation_id=conversation_id,
+                user_message=test_case['message']
+            )
+            
+            duration = time.time() - start_time
+            
+            # Validate the response structure
+            required_keys = ['needs_handoff', 'confidence', 'reason', 'category', 'urgency', 'suggested_response']
+            if not all(k in handoff_result for k in required_keys):
+                record_test_result(f"Handoff Analysis {i}", False, "Missing required keys in response", duration)
+                continue
+            
+            needs_handoff = handoff_result['needs_handoff']
+            confidence = handoff_result['confidence']
+            category = handoff_result['category']
+            urgency = handoff_result['urgency']
+            
+            # Check if the analysis matches expectations
+            if needs_handoff == test_case['expected_handoff']:
+                record_test_result(
+                    f"Handoff Analysis {i}", 
+                    True, 
+                    f"✓ {test_case['description']}: handoff={needs_handoff}, confidence={confidence:.2f}, category={category}, urgency={urgency}", 
+                    duration
+                )
+            else:
+                record_test_result(
+                    f"Handoff Analysis {i}", 
+                    False, 
+                    f"✗ Expected handoff={test_case['expected_handoff']}, got {needs_handoff} (confidence={confidence:.2f})", 
+                    duration
+                )
+            
+            # Print detailed results
+            print(f"    📋 Analysis Details:")
+            print(f"       Needs Handoff: {needs_handoff}")
+            print(f"       Confidence: {confidence:.2f}")
+            print(f"       Reason: {handoff_result['reason']}")
+            print(f"       Category: {category}")
+            print(f"       Urgency: {urgency}")
+            print(f"       Suggested Response: {handoff_result['suggested_response'][:80]}...")
+            
+        except Exception as e:
+            duration = time.time() - start_time
+            record_test_result(f"Handoff Analysis {i}", False, f"Error: {str(e)}", duration)
+
 def service_testing_menu():
     """Service testing submenu"""
     while True:
@@ -684,7 +789,8 @@ def service_testing_menu():
         print_menu_option(2, "Test Murf TTS Service", "Text-to-Speech API testing")
         print_menu_option(3, "Test Whisper Service", "STT API testing")
         print_menu_option(4, "Test Session Manager", "Session management testing")
-        print_menu_option(5, "Test All Services", "Run all service tests")
+        print_menu_option(5, "Test Handoff Analysis", "Human handoff detection testing")
+        print_menu_option(6, "Test All Services", "Run all service tests")
         print_menu_option(0, "Back to Main Menu", "Return to main menu")
         
         choice = get_user_choice()
@@ -707,10 +813,15 @@ def service_testing_menu():
             wait_for_input()
         elif choice == '5':
             clear_screen()
+            test_handoff_analysis()
+            wait_for_input()
+        elif choice == '6':
+            clear_screen()
             test_llm_service()
             test_murf_service()
             test_whisper_service()
             test_session_manager()
+            test_handoff_analysis()
             wait_for_input()
         elif choice == '0':
             break

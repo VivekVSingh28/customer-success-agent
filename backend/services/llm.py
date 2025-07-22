@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List, Iterator, Union
 import requests
 import structlog
+import threading
 
 # Import configuration
 import sys
@@ -170,47 +171,41 @@ class ConversationContext:
         }
 
 
-class AzureGPTClient:
+class OpenAIGPTClient:
     """
-    Client for interacting with Azure GPT-4.1 API using GitHub PAT authentication.
-    Handles conversation management, streaming responses, and customer success workflows.
+    Client for OpenAI GPT API using direct OpenAI API key authentication.
+    Replaces the previous Azure GPT implementation.
     """
 
     def __init__(self):
         """
-        Initialize the Azure GPT client.
-        Loads GitHub PAT from environment variables and other settings from config.
+        Initialize the OpenAI GPT client.
+        Loads OpenAI API key from environment variables and other settings from config.
         """
         # Load sensitive API key from environment variable
-        self.github_token = os.getenv('GITHUB_TOKEN')
-        # Add logic to strip 'Bearer ' prefix if present in the token
-        if self.github_token and self.github_token.lower().startswith("bearer "):
-            self.github_token = self.github_token[len("bearer "):]
-            logger.info("Stripped 'Bearer ' prefix from GITHUB_TOKEN.")
-
-        if not self.github_token:
-            logger.critical("GITHUB_TOKEN environment variable not set or empty. Cannot initialize Azure GPT client.")
-            raise LLMAPIError("GitHub token is required. Set GITHUB_TOKEN environment variable in .env file.")
+        self.openai_api_key = os.getenv('OPENAI_API_KEY')
+        if not self.openai_api_key:
+            logger.critical("OPENAI_API_KEY environment variable not set or empty. Cannot initialize OpenAI GPT client.")
+            raise LLMAPIError("OpenAI API key is required. Set OPENAI_API_KEY environment variable in .env file.")
 
         # Load configuration from config.py
-        self.azure_gpt_endpoint = config['AZURE_GPT_ENDPOINT']
-        self.model_name = config['AZURE_GPT_MODEL']
+        self.openai_endpoint = config['OPENAI_GPT_ENDPOINT']
+        self.model_name = config['OPENAI_GPT_MODEL']
 
-        # Default headers for API requests.
-        # For `https://models.github.ai/inference`, use Authorization Bearer token format.
+        # Default headers for API requests
         self.headers = {
-            'Authorization': f'Bearer {self.github_token}',
+            'Authorization': f'Bearer {self.openai_api_key}',
             'Content-Type': 'application/json'
         }
 
-        # Default conversation configuration from config.py
+        # Default generation configuration from config.py
         self.default_config = {
             'max_tokens': config['LLM_MAX_TOKENS'],
             'temperature': config['LLM_TEMPERATURE'],
             'top_p': config['LLM_TOP_P'],
             'frequency_penalty': config['LLM_FREQUENCY_PENALTY'],
             'presence_penalty': config['LLM_PRESENCE_PENALTY'],
-            'stop_sequences': config['LLM_STOP_SEQUENCES'].split(',') if config['LLM_STOP_SEQUENCES'] else None
+            'stop': config['LLM_STOP_SEQUENCES'].split(',') if config['LLM_STOP_SEQUENCES'] else None
         }
 
         # Request timeout and retry configuration from config.py
@@ -218,16 +213,17 @@ class AzureGPTClient:
         self.max_retries = config['LLM_MAX_RETRIES']
         self.retry_delay_base = config['LLM_RETRY_DELAY_BASE']
 
-        # Customer success system prompt (loaded from .env or default)
+        # Conversation management
+        self.conversations: Dict[str, ConversationContext] = {}
+        self.conversation_lock = threading.Lock()
+
+        # Load system prompt
         self.system_prompt = self._load_system_prompt()
 
-        # Active conversations storage (in production, consider Redis or a database)
-        self.conversations: Dict[str, ConversationContext] = {}
-
-        logger.info("Azure GPT client initialized",
-                    endpoint=self.azure_gpt_endpoint,
+        logger.info("OpenAI GPT client initialized",
+                    endpoint=self.openai_endpoint,
                     model=self.model_name,
-                    max_tokens_response=self.default_config['max_tokens'])
+                    max_tokens=self.default_config['max_tokens'])
 
     def _load_system_prompt(self) -> str:
         """Load the system prompt for customer success agent from environment or default."""
@@ -257,43 +253,20 @@ Remember: Customer satisfaction is the primary goal. Be helpful, understanding, 
     def _make_request(self, method: str, endpoint: str, json_data: Optional[Dict] = None,
                       params: Optional[Dict] = None, stream: bool = False) -> requests.Response:
         """
-        Make HTTP request to Azure GPT API with retry logic and comprehensive error handling.
-
-        Args:
-            method (str): HTTP method (GET, POST, etc.)
-            endpoint (str): API endpoint path (e.g., 'chat/completions'). Note: self.azure_gpt_endpoint
-                            should already contain the full base URL including deployment and api-version.
-            json_data (dict, optional): Request payload for JSON body.
-            params (dict, optional): Query parameters.
-            stream (bool): Whether to stream the response (for LLM streaming).
-
-        Returns:
-            requests.Response: API response object.
-
-        Raises:
-            LLMAPIError: If the request fails after all retries or due to an API-specific error.
+        Make HTTP request to OpenAI API with retry logic and comprehensive error handling.
         """
-        # The self.azure_gpt_endpoint is the base URL: https://models.github.ai/inference
-        # For chat completions, we need to append the correct path
-        if endpoint:
-            url = f"{self.azure_gpt_endpoint}/{endpoint}"
-        else:
-            url = self.azure_gpt_endpoint
-
         for attempt in range(self.max_retries + 1):
             try:
-                logger.debug("Making Azure GPT API request",
+                logger.debug("Making OpenAI API request",
                              method=method,
-                             url=url,
+                             endpoint=endpoint,
                              attempt=attempt + 1,
                              max_retries=self.max_retries,
-                             stream=stream,
-                             json_data_present=bool(json_data),
-                             params_present=bool(params))
+                             stream=stream)
 
                 response = requests.request(
                     method=method,
-                    url=url,
+                    url=endpoint,
                     headers=self.headers,
                     json=json_data,
                     params=params,
@@ -302,74 +275,68 @@ Remember: Customer satisfaction is the primary goal. Be helpful, understanding, 
                 )
 
                 response.raise_for_status()
-                logger.debug("Azure GPT API request successful", status_code=response.status_code)
+                logger.debug("OpenAI API request successful", status_code=response.status_code)
                 return response
 
             except requests.exceptions.HTTPError as e:
                 error_data = None
                 try:
                     error_data = e.response.json()
-                except (json.JSONDecodeError, AttributeError):
-                    error_data = {'raw_response': getattr(e.response, 'text', str(e))}
-
-                logger.error("Azure GPT API HTTP error",
+                except json.JSONDecodeError:
+                    error_data = {'raw_response': e.response.text}
+                
+                logger.error("OpenAI API HTTP error",
                              status_code=e.response.status_code,
                              error_details=error_data,
-                             url=url,
                              attempt=attempt + 1)
-
-                # For 4xx errors, don't retry
+                
+                # For 4xx errors (client errors), don't retry, raise immediately
                 if 400 <= e.response.status_code < 500:
                     error_message = error_data.get('error', {}).get('message', 'Unknown client error')
                     raise LLMAPIError(
-                        f"Azure GPT API client error: {e.response.status_code} - {error_message}",
+                        f"OpenAI API client error: {e.response.status_code} - {error_message}",
                         status_code=e.response.status_code,
                         response_data=error_data
                     )
-
-                # For 5xx errors, retry if attempts remain
+                # For 5xx errors (server errors), retry if attempts remain
                 elif attempt < self.max_retries:
                     wait_time = self.retry_delay_base ** attempt
-                    logger.warning("Azure GPT API server error, retrying...",
+                    logger.warning("OpenAI API server error, retrying...",
                                    error=str(e),
                                    status_code=e.response.status_code,
                                    wait_time=wait_time)
                     time.sleep(wait_time)
                 else:
-                    raise LLMAPIError(
-                        f"Azure GPT API server error after {self.max_retries} retries: {str(e)}",
-                        status_code=e.response.status_code,
-                        response_data=error_data
-                    )
+                    logger.error("OpenAI API server error failed after all retries", error=str(e))
+                    raise LLMAPIError(f"OpenAI API server error after {self.max_retries} retries: {str(e)}",
+                                     status_code=e.response.status_code,
+                                     response_data=error_data)
 
             except requests.exceptions.ConnectionError as e:
                 if attempt < self.max_retries:
                     wait_time = self.retry_delay_base ** attempt
-                    logger.warning("Azure GPT API connection error, retrying...",
+                    logger.warning("OpenAI API connection error, retrying...",
                                    error=str(e),
                                    wait_time=wait_time)
                     time.sleep(wait_time)
                 else:
-                    raise LLMAPIError(f"Azure GPT API connection failed after {self.max_retries} retries: {str(e)}")
+                    logger.error("OpenAI API connection failed after all retries", error=str(e))
+                    raise LLMAPIError(f"OpenAI API connection failed after {self.max_retries} retries: {str(e)}")
 
             except requests.exceptions.Timeout as e:
                 if attempt < self.max_retries:
                     wait_time = self.retry_delay_base ** attempt
-                    logger.warning("Azure GPT API request timed out, retrying...",
+                    logger.warning("OpenAI API request timed out, retrying...",
                                    error=str(e),
                                    wait_time=wait_time)
                     time.sleep(wait_time)
                 else:
-                    raise LLMAPIError(f"Azure GPT API request timed out after {self.max_retries} retries: {str(e)}")
-
-            except json.JSONDecodeError as e:
-                # This can happen if response.raise_for_status() passes, but content is not JSON
-                logger.error("Failed to decode JSON response from Azure GPT API", error=str(e), raw_response=response.text)
-                raise LLMAPIError(f"Invalid JSON response from Azure GPT API: {str(e)}")
+                    logger.error("OpenAI API request timed out after all retries", error=str(e))
+                    raise LLMAPIError(f"OpenAI API request timed out after {self.max_retries} retries: {str(e)}")
 
             except Exception as e:
-                logger.critical("An unhandled error occurred in _make_request for Azure GPT API", error=str(e))
-                raise LLMAPIError(f"An unhandled error occurred during Azure GPT API request: {str(e)}")
+                logger.critical("An unhandled error occurred in OpenAI API request", error=str(e))
+                raise LLMAPIError(f"An unhandled error occurred during OpenAI API request: {str(e)}")
 
     def create_conversation(self, customer_info: Optional[Dict] = None,
                             max_history_length: Optional[int] = None,
@@ -416,90 +383,89 @@ Remember: Customer satisfaction is the primary goal. Be helpful, understanding, 
     def chat_completion(self, message: str, conversation_id: Optional[str] = None,
                         customer_info: Optional[Dict] = None, **kwargs) -> Dict[str, Any]:
         """
-        Generate a chat completion response (non-streaming).
-
-        Args:
-            message (str): User message.
-            conversation_id (str, optional): Existing conversation ID. If None, a new conversation is created.
-            customer_info (dict, optional): Customer information for new conversations.
-            **kwargs: Additional generation parameters (e.g., max_tokens, temperature).
-
-        Returns:
-            dict: Response with generated text and metadata.
+        Generate chat completion using OpenAI GPT API.
         """
-        # Get or create conversation context
-        if conversation_id and conversation_id in self.conversations:
-            context = self.conversations[conversation_id]
-        else:
-            conversation_id = self.create_conversation(customer_info)
-            context = self.conversations[conversation_id]
-
-        # Add user message to context. Context manager will handle trimming.
-        context.add_message('user', message)
-
-        # Prepare request payload
-        config = self.default_config.copy()
-        config.update(kwargs)
-
-        request_data = {
-            'model': self.model_name,
-            'messages': context.get_context_for_api(), # Get messages after potential trimming
-            'max_tokens': config['max_tokens'],
-            'temperature': config['temperature'],
-            'top_p': config['top_p'],
-            'frequency_penalty': config['frequency_penalty'],
-            'presence_penalty': config['presence_penalty'],
-            'stream': False
-        }
-
-        if config['stop_sequences']:
-            request_data['stop'] = config['stop_sequences']
-
-        logger.info("Generating chat completion (non-streaming)",
-                    conversation_id=conversation_id,
-                    message_length=len(message),
-                    context_messages_count=len(context.messages),
-                    context_tokens_estimate=sum(context._count_tokens(m['content']) for m in context.messages))
+        start_time = time.time()
 
         try:
-            response = self._make_request(
-                method='POST',
-                endpoint='chat/completions', # Standard OpenAI API path
-                json_data=request_data
-            )
+            # Get or create conversation context
+            if conversation_id:
+                conversation = self.conversations.get(conversation_id)
+                if not conversation:
+                    raise LLMAPIError(f"Conversation {conversation_id} not found")
+            else:
+                conversation_id = self.create_conversation(customer_info)
+                conversation = self.conversations[conversation_id]
 
-            result = response.json()
+            # Add user message to conversation
+            conversation.add_message('user', message)
 
-            if 'choices' not in result or not result['choices']:
-                logger.error("No choices returned from Azure GPT API", response_data=result)
-                raise LLMAPIError("No choices returned from Azure GPT API")
-
-            assistant_message = result['choices'][0]['message']['content']
-
-            # Add assistant response to context
-            context.add_message('assistant', assistant_message)
-
-            # Prepare response
-            response_data = {
-                'response': assistant_message,
-                'conversation_id': conversation_id,
-                'usage': result.get('usage', {}),
-                'model': result.get('model', self.model_name),
-                'finish_reason': result['choices'][0].get('finish_reason', 'stop'),
-                'conversation_summary': context.get_conversation_summary()
+            # Prepare request payload for OpenAI API
+            messages = conversation.get_context_for_api()
+            
+            request_payload = {
+                'model': self.model_name,
+                'messages': messages,
+                'max_tokens': kwargs.get('max_tokens', self.default_config['max_tokens']),
+                'temperature': kwargs.get('temperature', self.default_config['temperature']),
+                'top_p': kwargs.get('top_p', self.default_config['top_p']),
+                'frequency_penalty': kwargs.get('frequency_penalty', self.default_config['frequency_penalty']),
+                'presence_penalty': kwargs.get('presence_penalty', self.default_config['presence_penalty'])
             }
 
-            logger.info("Chat completion generated successfully",
-                        conversation_id=conversation_id,
-                        response_length=len(assistant_message),
-                        tokens_used=result.get('usage', {}).get('total_tokens', 0))
+            if self.default_config['stop']:
+                request_payload['stop'] = self.default_config['stop']
 
-            return response_data
+            logger.info("Sending OpenAI chat completion request",
+                       conversation_id=conversation_id,
+                       message_preview=message[:100],
+                       model=self.model_name)
+
+            # Make API request
+            response = self._make_request(
+                method='POST',
+                endpoint=self.openai_endpoint,
+                json_data=request_payload
+            )
+
+            response_data = response.json()
+            
+            # Extract response
+            if 'choices' not in response_data or not response_data['choices']:
+                raise LLMAPIError("Invalid response format from OpenAI API: no choices")
+
+            choice = response_data['choices'][0]
+            response_text = choice.get('message', {}).get('content', '').strip()
+
+            if not response_text:
+                raise LLMAPIError("Empty response from OpenAI API")
+
+            # Add assistant response to conversation
+            conversation.add_message('assistant', response_text)
+
+            processing_time = time.time() - start_time
+
+            logger.info("OpenAI chat completion successful",
+                       conversation_id=conversation_id,
+                       response_preview=response_text[:100],
+                       processing_time=processing_time,
+                       tokens_used=response_data.get('usage', {}).get('total_tokens', 0))
+
+            return {
+                'response': response_text,
+                'conversation_id': conversation_id,
+                'processing_time': processing_time,
+                'tokens_used': response_data.get('usage', {}),
+                'model': self.model_name,
+                'finish_reason': choice.get('finish_reason')
+            }
 
         except LLMAPIError:
             raise
         except Exception as e:
-            logger.error("Unexpected error during non-streaming chat completion", error=str(e))
+            logger.error("Unexpected error during OpenAI chat completion",
+                        conversation_id=conversation_id,
+                        error=str(e))
             raise LLMAPIError(f"Chat completion failed: {str(e)}")
 
     def chat_completion_streaming(self, message: str, conversation_id: Optional[str] = None,
@@ -541,8 +507,8 @@ Remember: Customer satisfaction is the primary goal. Be helpful, understanding, 
             'stream': True # Request streaming response from LLM
         }
 
-        if config['stop_sequences']:
-            request_data['stop'] = config['stop_sequences']
+        if config['stop']:
+            request_data['stop'] = config['stop']
 
         logger.info("Starting streaming chat completion",
                     conversation_id=conversation_id,
@@ -554,7 +520,7 @@ Remember: Customer satisfaction is the primary goal. Be helpful, understanding, 
         try:
             response = self._make_request(
                 method='POST',
-                endpoint='chat/completions', # Standard OpenAI API path
+                endpoint=self.openai_endpoint, # Standard OpenAI API path
                 json_data=request_data,
                 stream=True
             )
@@ -776,6 +742,100 @@ Provide a professional summary suitable for handoff to human agents."""
             logger.error("Error generating conversation summary", error=str(e), conversation_id=conversation_id)
             raise LLMAPIError(f"Failed to generate summary: {str(e)}")
 
+    def analyze_handoff_need(self, conversation_id: str, user_message: str) -> Dict[str, Any]:
+        """
+        Analyze if a user query requires human assistance based on content and context.
+        
+        Args:
+            conversation_id (str): Conversation ID to analyze.
+            user_message (str): Latest user message to analyze.
+            
+        Returns:
+            dict: Handoff analysis results with recommendation.
+        """
+        if conversation_id not in self.conversations:
+            raise LLMAPIError(f"Conversation {conversation_id} not found for handoff analysis.")
+
+        context = self.conversations[conversation_id]
+        
+        # Get recent conversation history
+        recent_messages = [msg['content'] for msg in context.messages[-6:] if msg['role'] in ['user', 'assistant']]
+        
+        # Create handoff analysis prompt
+        analysis_prompt = f"""Analyze this customer service conversation to determine if human assistance is needed.
+
+Current user message: "{user_message}"
+
+Recent conversation context:
+{json.dumps(recent_messages, indent=2)}
+
+Determine if human handoff is needed based on these criteria:
+1. Refund requests or billing disputes
+2. Complex technical issues beyond basic troubleshooting
+3. Account security concerns or access issues
+4. Complaints or escalation requests
+5. Product returns or warranty claims
+6. Legal or policy questions
+7. Repeated failed attempts to resolve the same issue
+
+Respond ONLY in JSON format:
+{{
+    "needs_handoff": true/false,
+    "confidence": 0.0-1.0,
+    "reason": "brief explanation",
+    "category": "refund|technical|security|complaint|return|legal|escalation|general",
+    "urgency": "low|medium|high",
+    "suggested_response": "what to tell the customer"
+}}"""
+
+        logger.info("Analyzing handoff need", conversation_id=conversation_id)
+        
+        try:
+            # Create temporary conversation for analysis
+            temp_context_id = self.create_conversation(
+                max_history_length=3,
+                max_tokens_per_context=1500
+            )
+            temp_context = self.conversations[temp_context_id]
+            temp_context.messages[0]['content'] = "You are an expert customer service analyzer. Determine when human assistance is needed."
+
+            result = self.chat_completion(
+                message=analysis_prompt,
+                conversation_id=temp_context_id,
+                temperature=0.2,  # Lower temperature for consistent analysis
+                max_tokens=300
+            )
+
+            # Clean up temporary conversation
+            del self.conversations[temp_context_id]
+
+            try:
+                handoff_data = json.loads(result['response'])
+                
+                # Validate required keys
+                required_keys = ['needs_handoff', 'confidence', 'reason', 'category', 'urgency', 'suggested_response']
+                if not all(k in handoff_data for k in required_keys):
+                    raise ValueError("Missing required keys in handoff analysis.")
+                    
+                return handoff_data
+                    
+            except (json.JSONDecodeError, ValueError) as e:
+                logger.error("Invalid handoff analysis JSON", error=str(e), raw_response=result['response'])
+                return {
+                    'needs_handoff': False,
+                    'confidence': 0.5,
+                    'reason': 'Analysis parsing failed',
+                    'category': 'general',
+                    'urgency': 'low',
+                    'suggested_response': 'I apologize, but I encountered an issue analyzing your request. How can I help you today?'
+                }
+
+        except LLMAPIError:
+            raise
+        except Exception as e:
+            logger.error("Error analyzing handoff need", error=str(e), conversation_id=conversation_id)
+            raise LLMAPIError(f"Failed to analyze handoff need: {str(e)}")
+
     def cleanup_conversation(self, conversation_id: str) -> bool:
         """
         Clean up conversation from memory.
@@ -842,23 +902,23 @@ Provide a professional summary suitable for handoff to human agents."""
 
 
 # Convenience function for module-level usage
-def create_llm_service() -> AzureGPTClient:
+def create_llm_service() -> OpenAIGPTClient:
     """
-    Create and return a configured Azure GPT client.
+    Create and return a configured OpenAI GPT client.
     This function strictly loads configuration from environment variables.
 
     Returns:
-        AzureGPTClient: Configured client instance.
+        OpenAIGPTClient: Configured client instance.
     """
-    return AzureGPTClient()
+    return OpenAIGPTClient()
 
 
 # Example usage and testing
 if __name__ == '__main__':
     # To run this example, ensure you have a .env file in the project root with:
-    # GITHUB_TOKEN="your_github_pat_azure_gpt_4_1_here"
-    # AZURE_GPT_ENDPOINT="https://models.github.ai/inference"
-    # AZURE_GPT_MODEL="openai/gpt-4.1"
+    # OPENAI_API_KEY="your_openai_api_key_here"
+    # OPENAI_GPT_ENDPOINT="https://api.openai.com/v1/chat/completions"
+    # OPENAI_GPT_MODEL="gpt-4o" # or "gpt-4" depending on your preference
     # LLM_MAX_TOKENS="1000"
     # LLM_TEMPERATURE="0.7"
     # LLM_TOP_P="0.95"

@@ -28,6 +28,7 @@ from collections import defaultdict
 from typing import Dict, Any, Optional, List
 import structlog
 import base64 # For encoding/decoding audio chunks for transmission
+import json # For JSON handling in handoff analysis
 
 # Import configuration
 import sys
@@ -352,103 +353,111 @@ def handle_client_disconnection(sid: str):
 
 def handle_incoming_audio_stream(sid: str, data: Dict[str, Any], socketio=None):
     """
-    Handle incoming audio stream from WebSocket client.
-    This is the main orchestration function for the audio conversation flow.
-    
-    Args:
-        sid (str): Session ID from Flask-SocketIO.
-        data (dict): Audio data and metadata from client. Expected keys:
-                     'audio_data' (base64 encoded string), 'is_final' (bool),
-                     'format' (str, e.g., 'wav', 'mp3').
-        socketio: Flask-SocketIO instance for emitting responses.
+    Handle incoming audio stream from client for speech-to-text conversion and processing.
+    Enhanced with handoff analysis and response format support.
     """
-    logger.debug("Received audio stream chunk", session_id=sid, data_keys=data.keys())
-    
-    session = audio_session_manager.get_session(sid)
-    if not session:
-        logger.warning("Audio stream received for non-existent session", session_id=sid)
-        if socketio:
-            socketio.emit('error', {
-                'message': 'Session not found. Please reconnect.'
-            }, room=sid)
-        return
+    try:
+        # Validate required fields
+        if not isinstance(data, dict) or 'audio_data' not in data or 'is_final' not in data:
+            if socketio:
+                socketio.emit('error', {'message': 'Invalid audio stream data format. Missing required fields.'})
+            return
 
-    # Use a lock to prevent race conditions if multiple audio chunks arrive very rapidly
-    with audio_session_manager.session_locks[sid]:
-        try:
-            # Check if already processing a previous full audio segment
-            if session.get('is_processing', False):
-                logger.debug("Audio stream received while previous request is still processing. Skipping.", session_id=sid)
-                # Optionally, send a status update to the client
-                if socketio:
-                    socketio.emit('status', {
-                        'message': 'Currently processing previous request. Please wait or speak after response.'
-                    }, room=sid)
-                return
-            
-            audio_session_manager.update_session_activity(sid)
-            
-            # Extract and decode audio data
-            audio_chunk_b64 = data.get('audio_data')
-            is_final = data.get('is_final', False)
-            # Client should ideally send the format of the audio it's sending
-            audio_format = data.get('format', session.get('audio_format', 'wav')) 
-            
-            if not audio_chunk_b64:
-                logger.warning("Received empty audio_data in chunk", session_id=sid)
-                if is_final: # If it's the final chunk and empty, it's an issue
-                     if socketio:
-                        socketio.emit('error', {'message': 'No audio data received for processing.'}, room=sid)
-                     session['is_processing'] = False # Reset flag
-                return
+        # Get response format from the data (this is the missing piece!)
+        response_format = data.get('response_format', 'text')
+        
+        logger.info("Processing audio stream", 
+                   session_id=sid,
+                   is_final=data['is_final'],
+                   response_format=response_format,  # Log it
+                   audio_data_size=len(data.get('audio_data', '')))
 
+        session = audio_session_manager.get_session(sid)
+        if not session:
+            logger.warning("Audio stream received for non-existent session", session_id=sid)
+            if socketio:
+                socketio.emit('error', {
+                    'message': 'Session not found. Please reconnect.'
+                }, room=sid)
+            return
+
+        # Use a lock to prevent race conditions if multiple audio chunks arrive very rapidly
+        with audio_session_manager.session_locks[sid]:
             try:
-                audio_chunk_bytes = base64.b64decode(audio_chunk_b64)
-            except Exception as e:
-                logger.error("Failed to base64 decode audio chunk", session_id=sid, error=str(e))
-                if socketio:
-                    socketio.emit('error', {'message': 'Invalid audio data format.'}, room=sid)
-                if is_final: session['is_processing'] = False # Reset flag
-                return
-            
-            # Accumulate audio chunk
-            audio_session_manager.accumulate_audio_chunk(sid, audio_chunk_bytes)
-            
-            # If this is the final chunk, trigger full processing
-            if is_final:
-                logger.info("Final audio chunk received. Initiating full processing.", session_id=sid)
-                
-                # Mark as processing to prevent new audio chunks from starting new processes
-                session['is_processing'] = True 
-                
-                # Get accumulated audio
-                complete_audio = audio_session_manager.get_accumulated_audio(sid)
-                
-                if not complete_audio:
-                    logger.warning("No complete audio data to process after final chunk.", session_id=sid)
+                # Check if already processing a previous full audio segment
+                if session.get('is_processing', False):
+                    logger.debug("Audio stream received while previous request is still processing. Skipping.", session_id=sid)
+                    # Optionally, send a status update to the client
                     if socketio:
-                        socketio.emit('error', {
-                            'message': 'No complete audio data received for processing.'
+                        socketio.emit('status', {
+                            'message': 'Currently processing previous request. Please wait or speak after response.'
                         }, room=sid)
-                    session['is_processing'] = False # Reset flag
                     return
                 
-                # Start processing in separate thread to avoid blocking the WebSocket event loop
-                processing_thread = threading.Thread(
-                    target=_process_audio_conversation,
-                    args=(sid, complete_audio, audio_format, socketio)
-                )
-                processing_thread.daemon = True # Allow thread to exit with main program
-                processing_thread.start()
-            
-            else:
-                # Send chunk received confirmation (optional, but good for client feedback)
-                if socketio:
-                    socketio.emit('audio_chunk_received', {
-                        'chunk_size': len(audio_chunk_bytes),
-                        'status': 'received',
-                        'is_final': False
-                    }, room=sid)
+                audio_session_manager.update_session_activity(sid)
+                
+                # Extract and decode audio data
+                audio_chunk_b64 = data.get('audio_data')
+                is_final = data.get('is_final', False)
+                # Client should ideally send the format of the audio it's sending
+                audio_format = data.get('format', session.get('audio_format', 'wav')) 
+                
+                if not audio_chunk_b64:
+                    logger.warning("Received empty audio_data in chunk", session_id=sid)
+                    if is_final: # If it's the final chunk and empty, it's an issue
+                         if socketio:
+                            socketio.emit('error', {'message': 'No audio data received for processing.'}, room=sid)
+                         session['is_processing'] = False # Reset flag
+                    return
+
+                try:
+                    audio_chunk_bytes = base64.b64decode(audio_chunk_b64)
+                except Exception as e:
+                    logger.error("Failed to base64 decode audio chunk", session_id=sid, error=str(e))
+                    if socketio:
+                        socketio.emit('error', {'message': 'Invalid audio data format.'}, room=sid)
+                    if is_final: session['is_processing'] = False # Reset flag
+                    return
+                
+                # Accumulate audio chunk
+                audio_session_manager.accumulate_audio_chunk(sid, audio_chunk_bytes)
+                
+                # If this is the final chunk, trigger full processing
+                if is_final:
+                    logger.info("Final audio chunk received. Initiating full processing.", session_id=sid)
+                    
+                    # Mark as processing to prevent new audio chunks from starting new processes
+                    session['is_processing'] = True 
+                    
+                    # Get accumulated audio
+                    complete_audio = audio_session_manager.get_accumulated_audio(sid)
+                    
+                    if not complete_audio:
+                        logger.warning("No complete audio data to process after final chunk.", session_id=sid)
+                        if socketio:
+                            socketio.emit('error', {
+                                'message': 'No complete audio data received for processing.'
+                            }, room=sid)
+                        session['is_processing'] = False # Reset flag
+                        return
+                    
+                    # Process the complete audio conversation WITH response format
+                    _process_audio_conversation(
+                        sid=sid, 
+                        audio_data=complete_audio, 
+                        audio_format=audio_format,
+                        response_format=response_format,  # Pass it here!
+                        socketio=socketio
+                    )
+                
+                else:
+                    # Send chunk received confirmation (optional, but good for client feedback)
+                    if socketio:
+                        socketio.emit('audio_chunk_received', {
+                            'chunk_size': len(audio_chunk_bytes),
+                            'status': 'received',
+                            'is_final': False
+                        }, room=sid)
         
         except Exception as e:
             logger.error("Unhandled error in handle_incoming_audio_stream", 
@@ -462,15 +471,10 @@ def handle_incoming_audio_stream(sid: str, data: Dict[str, Any], socketio=None):
                 session['is_processing'] = False
 
 
-def _process_audio_conversation(sid: str, audio_data: bytes, audio_format: str, socketio=None):
+def _process_audio_conversation(sid: str, audio_data: bytes, audio_format: str, response_format: str = 'text', socketio=None):
     """
-    Process complete audio conversation workflow in a separate thread.
-    
-    Args:
-        sid (str): Session ID.
-        audio_data (bytes): Complete audio data for STT.
-        audio_format (str): Audio format (e.g., 'wav', 'mp3').
-        socketio: Flask-SocketIO instance for emitting responses.
+    Process audio conversation with STT, LLM, and optional TTS.
+    Now unified with text conversation logic for consistent response handling.
     """
     session = audio_session_manager.get_session(sid)
     if not session:
@@ -540,62 +544,58 @@ def _process_audio_conversation(sid: str, audio_data: bytes, audio_format: str, 
                    response_text_preview=response_text[:100],
                    llm_duration=llm_duration)
         
-        # Step 3: Convert response to streaming audio using Murf TTS
-        if socketio:
-            socketio.emit('processing_status', {
-                'stage': 'tts',
-                'message': 'Converting response to speech...',
-                'response_text': response_text
-            }, room=sid)
+        # After getting LLM response, use the SAME logic as text conversation
+        # Instead of just emitting text, check response_format and handle TTS
         
-        tts_start = time.time()
+        if response_format == 'audio':
+            logger.info("Generating audio response for voice input", session_id=sid)
+            
+            # Use the same TTS streaming logic as text conversation
+            try:
+                socketio.emit('audio_stream_start', {
+                    'message': 'Starting audio response stream',
+                    'format': 'mp3'
+                }, room=sid)
+                
+                # Stream TTS audio using existing function
+                _stream_tts_audio(sid, llm_response, socketio)
+                
+                socketio.emit('audio_stream_complete', {
+                    'message': 'Audio response stream completed'
+                }, room=sid)
+                
+            except Exception as tts_error:
+                logger.error("TTS generation failed for voice input", 
+                           session_id=sid, error=str(tts_error))
+                # Fall back to text response
+                response_format = 'text'
         
-        # Stream TTS audio back to client
-        _stream_tts_audio(sid, response_text, socketio)
+        # Prepare final response (same as text conversation)
+        processing_time = time.time() - start_time
         
-        tts_duration = time.time() - tts_start
+        response_data = {
+            'transcribed_text': transcribed_text,
+            'response_text': llm_response,
+            'response_format': response_format,
+            'processing_time': {
+                'total': processing_time,
+                'stt': stt_duration,
+                'llm': llm_duration,
+                'tts': tts_duration if response_format == 'audio' else 0
+            }
+        }
         
-        # Update session statistics
-        total_duration = time.time() - start_time
-        session['message_count'] += 1
-        session['total_audio_duration'] += total_duration # This might be total processing time, not audio duration
+        # Add audio data if TTS was successful
+        if response_format == 'audio' and hasattr(session, 'audio_response'):
+            response_data['audio_data'] = session['audio_response']
+            response_data['audio_format'] = 'mp3'
         
-        logger.info("Audio conversation completed", 
-                   session_id=sid,
-                   conversation_id=conversation_id,
-                   total_duration=total_duration,
-                   stt_duration=stt_duration,
-                   llm_duration=llm_duration,
-                   tts_duration=tts_duration)
+        # Emit the same conversation_completed event as text conversation
+        socketio.emit('conversation_completed', response_data, room=sid)
         
-        # Send final completion status
-        if socketio:
-            socketio.emit('conversation_completed', {
-                'transcribed_text': transcribed_text,
-                'response_text': response_text,
-                'processing_time': {
-                    'stt': stt_duration,
-                    'llm': llm_duration,
-                    'tts': tts_duration,
-                    'total': total_duration
-                }
-            }, room=sid)
-    
-    except (MurfAPIError, LLMAPIError, WhisperAPIError) as e:
-        logger.error("API error during conversation processing", 
-                    session_id=sid, error=str(e), api_status_code=getattr(e, 'status_code', 'N/A'))
-        if socketio:
-            socketio.emit('error', {
-                'message': f'Service error: {str(e)}. Please try again.'
-            }, room=sid)
-    
     except Exception as e:
-        logger.critical("Unexpected error during conversation processing", 
-                    session_id=sid, error=str(e), exc_info=True) # Log full traceback
-        if socketio:
-            socketio.emit('error', {
-                'message': 'An unexpected internal error occurred. Our team has been notified.'
-            }, room=sid)
+        logger.error("Audio conversation processing failed", session_id=sid, error=str(e))
+        socketio.emit('error', {'message': f'Audio conversation failed: {str(e)}'}, room=sid)
     
     finally:
         # Reset processing flag, ensuring it's always reset
@@ -603,37 +603,26 @@ def _process_audio_conversation(sid: str, audio_data: bytes, audio_format: str, 
             session = audio_session_manager.get_session(sid)
             if session:
                 session['is_processing'] = False
-                logger.debug("Processing flag reset for session", session_id=sid)
 
 
 def _stream_tts_audio(sid: str, text: str, socketio=None):
     """
-    Stream TTS audio back to client using Murf streaming TTS.
-    
-    Args:
-        sid (str): Session ID.
-        text (str): Text to convert to speech.
-        socketio: Flask-SocketIO instance for emitting audio chunks.
+    Stream TTS audio to client and store complete audio data for conversation_completed.
     """
     try:
-        logger.info("Starting TTS streaming", session_id=sid, text_length=len(text))
-        
-        session = audio_session_manager.get_session(sid)
-        if not session:
-            logger.error("Session not found for TTS streaming. Cannot stream audio.", session_id=sid)
+        session_data = audio_session_manager.get_session(sid)
+        if not session_data:
+            logger.error("Session not found for TTS streaming", session_id=sid)
             return
 
-        customer_info = session.get('customer_info', {})
-        voice_preferences = customer_info.get('preferences', {}).get('voice', {})
-        
         # Configure TTS parameters. Prioritize session preferences, then config.py defaults.
         tts_config = {
-            'voice_id': voice_preferences.get('voice_id') or config['MURF_DEFAULT_VOICE_ID'],
-            'speed': voice_preferences.get('speed', config['MURF_DEFAULT_SPEED']),
-            'pitch': voice_preferences.get('pitch', config['MURF_DEFAULT_PITCH']),
-            'volume': voice_preferences.get('volume', config['MURF_DEFAULT_VOLUME']),
-            'audio_format': voice_preferences.get('audio_format') or config['MURF_DEFAULT_AUDIO_FORMAT'],
-            'sample_rate': voice_preferences.get('sample_rate') or config['MURF_DEFAULT_SAMPLE_RATE'],
+            'voice_id': llm_response.get('voice_id'),
+            'speed': llm_response.get('speed'),
+            'pitch': llm_response.get('pitch'),
+            'volume': llm_response.get('volume'),
+            'audio_format': llm_response.get('audio_format', 'mp3'),
+            'sample_rate': config['MURF_DEFAULT_SAMPLE_RATE'], # Assuming a default sample rate
             'chunk_size': config['MURF_STREAM_CHUNK_SIZE']
         }
         
@@ -645,6 +634,9 @@ def _stream_tts_audio(sid: str, text: str, socketio=None):
         
         chunk_count = 0
         total_bytes = 0
+        
+        # Store complete audio data for conversation_completed
+        complete_audio_chunks = []
         
         for audio_chunk in audio_session_manager.murf_client.text_to_speech_streaming(
             text=text,
@@ -671,6 +663,9 @@ def _stream_tts_audio(sid: str, text: str, socketio=None):
                         'format': tts_config['audio_format']
                     }, room=sid)
                 
+                # Also store for final response
+                complete_audio_chunks.append(audio_chunk)
+                
                 # Small delay to prevent overwhelming the client, especially over slow networks
                 time.sleep(0.005) # Reduced slightly from 0.01 for potentially faster streaming
         
@@ -681,6 +676,10 @@ def _stream_tts_audio(sid: str, text: str, socketio=None):
                 'total_chunks': chunk_count,
                 'total_bytes': total_bytes
             }, room=sid)
+        
+        # Combine all chunks and store in session
+        complete_audio = b''.join(complete_audio_chunks)
+        session_data['audio_response'] = base64.b64encode(complete_audio).decode('utf-8')
         
         logger.info("TTS streaming completed", 
                    session_id=sid,
@@ -846,29 +845,20 @@ def handle_generate_summary(sid: str, data: Dict[str, Any], socketio=None):
 
 def handle_text_input(sid: str, data: Dict[str, Any], socketio=None):
     """
-    Handle incoming text input from WebSocket client.
-    This processes text messages through the LLM without STT processing.
-    
-    Args:
-        sid (str): Session ID from Flask-SocketIO.
-        data (dict): Text input data from client. Expected keys:
-                     'text' (str), 'response_format' (str: 'text', 'audio', 'both').
-        socketio: Flask-SocketIO instance for emitting responses.
+    Handle text input from client and process it through the conversation pipeline.
     """
-    logger.info("Received text input", session_id=sid)
-    
-    session = audio_session_manager.get_session(sid)
-    if not session:
-        logger.warning("Text input received for non-existent session", session_id=sid)
-        if socketio:
-            socketio.emit('error', {
-                'message': 'Session not found. Please reconnect.'
-            }, room=sid)
-        return
+    try:
+        session = audio_session_manager.get_session(sid)
+        if not session:
+            logger.warning("Text input received for non-existent session", session_id=sid)
+            if socketio:
+                socketio.emit('error', {
+                    'message': 'Session not found. Please reconnect.'
+                }, room=sid)
+            return
 
-    # Use a lock to prevent race conditions
-    with audio_session_manager.session_locks[sid]:
-        try:
+        # Use a lock to prevent race conditions
+        with audio_session_manager.session_locks[sid]:
             # Check if already processing
             if session.get('is_processing', False):
                 logger.debug("Text input received while previous request is still processing", session_id=sid)
@@ -920,7 +910,7 @@ def handle_text_input(sid: str, data: Dict[str, Any], socketio=None):
             
             # Start processing in separate thread
             processing_thread = threading.Thread(
-                target=_process_text_conversation,
+                target=_process_text_conversation_with_handoff,
                 args=(sid, text_input, response_format, socketio)
             )
             processing_thread.daemon = True
@@ -931,28 +921,20 @@ def handle_text_input(sid: str, data: Dict[str, Any], socketio=None):
                        text_preview=text_input[:100],
                        response_format=response_format)
         
-        except Exception as e:
-            logger.error("Error handling text input", 
-                        session_id=sid, error=str(e), exc_info=True)
-            if socketio:
-                socketio.emit('error', {
-                    'message': 'An internal error occurred while processing text input.'
-                }, room=sid)
-            # Reset processing flag
-            if session:
-                session['is_processing'] = False
+    except Exception as e:
+        logger.error("Error handling text input", 
+                    session_id=sid, error=str(e), exc_info=True)
+        if socketio:
+            socketio.emit('error', {
+                'message': 'An internal error occurred while processing text input.'
+            }, room=sid)
+        # Reset processing flag
+        if session:
+            session['is_processing'] = False
 
 
-def _process_text_conversation(sid: str, text_input: str, response_format: str, socketio=None):
-    """
-    Process text conversation workflow in a separate thread.
-    
-    Args:
-        sid (str): Session ID.
-        text_input (str): User's text input.
-        response_format (str): Desired response format ('text', 'audio', 'both').
-        socketio: Flask-SocketIO instance for emitting responses.
-    """
+def _process_text_conversation_with_handoff(sid: str, text_input: str, response_format: str, socketio=None):
+    """Enhanced text conversation processing with handoff analysis"""
     session = audio_session_manager.get_session(sid)
     if not session:
         logger.error("Session not found in _process_text_conversation", session_id=sid)
@@ -964,106 +946,145 @@ def _process_text_conversation(sid: str, text_input: str, response_format: str, 
     start_time = time.time()
     
     try:
-        # Send processing status
+        # STEP 1: Analyze if handoff is needed
         if socketio:
             socketio.emit('processing_status', {
-                'stage': 'llm',
-                'message': 'Generating intelligent response...',
+                'stage': 'analysis',
+                'message': 'Analyzing your request...',
                 'input_text': text_input,
                 'input_method': 'text'
             }, room=sid)
         
-        # Generate LLM response
-        llm_start = time.time()
+        handoff_analysis = audio_session_manager.llm_client.analyze_handoff_need(
+            conversation_id, text_input
+        )
+        
+        logger.info("Handoff analysis completed", 
+                   session_id=sid,
+                   needs_handoff=handoff_analysis['needs_handoff'],
+                   confidence=handoff_analysis['confidence'],
+                   category=handoff_analysis['category'])
+        
+        # Add this right after the handoff analysis:
+        logger.info("DEBUG: Handoff analysis result", 
+           session_id=sid,
+           needs_handoff=handoff_analysis['needs_handoff'],
+           confidence=handoff_analysis['confidence'],
+           category=handoff_analysis['category'],
+           threshold_check=handoff_analysis['confidence'] > 0.7)
+
+        # STEP 2: Generate AI response
+        if socketio:
+            socketio.emit('processing_status', {
+                'stage': 'llm',
+                'message': 'Generating response...',
+                'input_text': text_input,
+                'input_method': 'text'
+            }, room=sid)
+        
         llm_response = audio_session_manager.llm_client.chat_completion(
             message=text_input,
             conversation_id=conversation_id,
             temperature=llm_session_config.get('temperature', config['LLM_TEMPERATURE']),
             max_tokens=llm_session_config.get('max_tokens', config['LLM_MAX_TOKENS'])
         )
-        llm_duration = time.time() - llm_start
         
         response_text = llm_response['response']
         
-        logger.info("LLM response generated for text input", 
-                   session_id=sid,
-                   response_text_preview=response_text[:100],
-                   llm_duration=llm_duration)
-        
-        # Handle different response formats
-        tts_duration = 0
-        if response_format in ['text', 'both']:
-            # Send text response
-            if socketio:
-                socketio.emit('text_response', {
-                    'response_text': response_text,
-                    'input_text': text_input,
-                    'input_method': 'text'
-                }, room=sid)
-        
+        # Add this right before the TTS section:
+        logger.info(f"DEBUG: Response format is '{response_format}', should generate TTS: {response_format in ['audio', 'both']}", session_id=sid)
+
+        # Add this before the TTS section:
+        logger.info("DEBUG: Response format check", 
+           session_id=sid,
+           response_format=response_format,
+           should_generate_tts=response_format in ['audio', 'both'])
+
+        # STEP 3: Handle TTS if needed
+        audio_data_base64 = None
         if response_format in ['audio', 'both']:
-            # Convert response to audio using TTS
+            logger.info("Generating TTS for response", session_id=sid, response_format=response_format)
+            
             if socketio:
                 socketio.emit('processing_status', {
                     'stage': 'tts',
-                    'message': 'Converting response to speech...',
-                    'response_text': response_text
+                    'message': 'Generating audio response...',
+                    'input_text': text_input,
+                    'input_method': 'text'
                 }, room=sid)
             
-            tts_start = time.time()
-            _stream_tts_audio(sid, response_text, socketio)
-            tts_duration = time.time() - tts_start
+            try:
+                # Check if Murf client is available
+                if not hasattr(audio_session_manager, 'murf_client') or not audio_session_manager.murf_client:
+                    logger.warning("Murf client not available, skipping TTS", session_id=sid)
+                else:
+                    # Generate TTS using Murf
+                    tts_response = audio_session_manager.murf_client.text_to_speech(
+                        text=response_text,
+                        voice_id=llm_session_config.get('voice_id'),
+                        speed=llm_session_config.get('speed'),
+                        pitch=llm_session_config.get('pitch'),
+                        volume=llm_session_config.get('volume'),
+                        audio_format=llm_session_config.get('audio_format', 'mp3')
+                    )
+                    audio_data_base64 = tts_response['audio_data']
+                    logger.info("TTS generation successful", session_id=sid)
+                    
+            except Exception as e:
+                logger.error("TTS generation failed", session_id=sid, error=str(e))
+                # Continue without audio
         
-        # Update session statistics
-        total_duration = time.time() - start_time
-        session['message_count'] += 1
-        session['total_audio_duration'] += total_duration  # Track total processing time
+        # STEP 4: Send complete response
+        conversation_data = {
+            'input_text': text_input,
+            'response_text': response_text,
+            'response_format': response_format,
+            'processing_time': time.time() - start_time
+        }
         
-        logger.info("Text conversation completed", 
+        if audio_data_base64:
+            conversation_data['audio_data'] = audio_data_base64
+            conversation_data['audio_format'] = 'mp3'
+            logger.info("Including audio data in response", session_id=sid)
+        
+        if socketio:
+            socketio.emit('conversation_completed', conversation_data, room=sid)
+        
+        # STEP 5: Send handoff suggestion if needed (AFTER the main response)
+        if handoff_analysis['needs_handoff'] and handoff_analysis['confidence'] > 0.7:
+            logger.info("Sending handoff suggestion", 
+                       session_id=sid,
+                       category=handoff_analysis['category'],
+                       confidence=handoff_analysis['confidence'])
+            
+            if socketio:
+                socketio.emit('handoff_suggestion', {
+                    'reason': handoff_analysis['reason'],
+                    'category': handoff_analysis['category'],
+                    'urgency': handoff_analysis['urgency'],
+                    'suggested_response': f"I notice this might be better handled by our human support team. Would you like me to connect you with a specialist who can help with {handoff_analysis['category']} issues?",
+                    'confidence': handoff_analysis['confidence']
+                }, room=sid)
+        
+        logger.info("Text conversation completed with handoff analysis", 
                    session_id=sid,
-                   conversation_id=conversation_id,
-                   total_duration=total_duration,
-                   llm_duration=llm_duration,
-                   tts_duration=tts_duration,
-                   response_format=response_format)
-        
-        # Send completion status
-        if socketio:
-            socketio.emit('conversation_completed', {
-                'input_text': text_input,
-                'response_text': response_text,
-                'input_method': 'text',
-                'response_format': response_format,
-                'processing_time': {
-                    'llm': llm_duration,
-                    'tts': tts_duration if response_format in ['audio', 'both'] else 0,
-                    'total': total_duration
-                }
-            }, room=sid)
-    
-    except (MurfAPIError, LLMAPIError) as e:
-        logger.error("API error during text conversation processing", 
-                    session_id=sid, error=str(e), api_status_code=getattr(e, 'status_code', 'N/A'))
-        if socketio:
-            socketio.emit('error', {
-                'message': f'Service error: {str(e)}. Please try again.'
-            }, room=sid)
-    
+                   processing_time=time.time() - start_time,
+                   needs_handoff=handoff_analysis['needs_handoff'],
+                   handoff_confidence=handoff_analysis['confidence'])
+
     except Exception as e:
-        logger.critical("Unexpected error during text conversation processing", 
-                    session_id=sid, error=str(e), exc_info=True)
+        logger.critical("Error in text conversation with handoff analysis", 
+                       session_id=sid, error=str(e), exc_info=True)
         if socketio:
             socketio.emit('error', {
-                'message': 'An unexpected internal error occurred. Our team has been notified.'
+                'message': 'An error occurred processing your request.'
             }, room=sid)
     
     finally:
-        # Reset processing flag
         with audio_session_manager.session_locks[sid]:
             session = audio_session_manager.get_session(sid)
             if session:
                 session['is_processing'] = False
-                logger.debug("Processing flag reset for text session", session_id=sid)
 
 
 def _check_text_input_rate_limit(sid: str) -> bool:
@@ -1104,6 +1125,85 @@ def _check_text_input_rate_limit(sid: str) -> bool:
     except Exception as e:
         logger.error("Error checking text input rate limit", session_id=sid, error=str(e))
         return True  # Allow on error to avoid blocking legitimate requests
+
+
+def handle_request_human_assistance(sid: str, data: Dict[str, Any], socketio=None):
+    """
+    Handle request for human assistance handoff.
+    
+    Args:
+        sid (str): Session ID.
+        data (dict): Request data containing reason, category, etc.
+        socketio: Flask-SocketIO instance for emitting responses.
+    """
+    logger.info("Human assistance requested", session_id=sid)
+    
+    try:
+        session = audio_session_manager.get_session(sid)
+        if not session:
+            logger.warning("Human assistance request from non-existent session", session_id=sid)
+            if socketio:
+                socketio.emit('error', {
+                    'message': 'Session not found. Please reconnect.'
+                }, room=sid)
+            return
+
+        conversation_id = session['conversation_id']
+        
+        # Get handoff details
+        reason = data.get('reason', 'Customer requested human assistance')
+        category = data.get('category', 'general')
+        urgency = data.get('urgency', 'medium')
+        
+        # Create handoff ticket (in a real system, this would integrate with your ticketing system)
+        handoff_ticket = {
+            'ticket_id': f"HO-{int(time.time())}-{sid[:8]}",
+            'session_id': sid,
+            'conversation_id': conversation_id,
+            'reason': reason,
+            'category': category,
+            'urgency': urgency,
+            'customer_info': session.get('customer_info', {}),
+            'created_at': time.time(),
+            'status': 'pending'
+        }
+        
+        # Store handoff request (in production, save to database)
+        if not hasattr(audio_session_manager, 'handoff_requests'):
+            audio_session_manager.handoff_requests = {}
+        audio_session_manager.handoff_requests[handoff_ticket['ticket_id']] = handoff_ticket
+        
+        # Generate conversation summary for human agent
+        try:
+            summary = audio_session_manager.llm_client.generate_summary(conversation_id)
+            handoff_ticket['conversation_summary'] = summary['summary']
+        except Exception as e:
+            logger.warning("Failed to generate summary for handoff", error=str(e))
+            handoff_ticket['conversation_summary'] = "Summary generation failed"
+        
+        # Send handoff confirmation to client
+        if socketio:
+            socketio.emit('human_handoff_initiated', {
+                'ticket_id': handoff_ticket['ticket_id'],
+                'estimated_wait_time': '5-10 minutes',  # This would come from your queue system
+                'message': 'I\'ve connected you with our human support team. A representative will be with you shortly.',
+                'category': category,
+                'urgency': urgency
+            }, room=sid)
+        
+        logger.info("Human handoff initiated", 
+                   session_id=sid,
+                   ticket_id=handoff_ticket['ticket_id'],
+                   category=category,
+                   urgency=urgency)
+
+    except Exception as e:
+        logger.error("Error handling human assistance request", 
+                    session_id=sid, error=str(e), exc_info=True)
+        if socketio:
+            socketio.emit('error', {
+                'message': 'Failed to connect to human assistance. Please try again.'
+            }, room=sid)
 
 
 def get_active_sessions() -> List[Dict[str, Any]]:

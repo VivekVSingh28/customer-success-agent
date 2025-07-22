@@ -1,52 +1,37 @@
-# Core Flask Framework
-Flask==2.3.3
-Flask-CORS==4.0.0
-# WebSocket Support for Real-time Communication
-Flask-SocketIO==5.3.6
-python-socketio==5.8.0
-python-engineio==4.8.0 # Often a dependency of Flask-SocketIO, good to be explicit
-
-# Environment Variables Management
-python-dotenv==1.0.0
-
-# HTTP Client Library for API Calls
-requests==2.31.0
-
-# JSON Web Token Support (for potential authentication/session tokens)
-PyJWT==2.8.0
-
-# Audio Processing Libraries (useful if backend needs to manipulate audio chunks)
-pydub==0.25.1
-mutagen==1.47.0
-
-# Async Support (crucial for Flask-SocketIO performance with WebSockets)
+bidict==0.23.1
+blinker==1.9.0
+certifi==2025.7.14
+charset-normalizer==3.4.2
+click==8.2.1
+dnspython==2.7.0
 eventlet==0.33.3
-
-# Logging and Error Handling (more structured logging)
-structlog==23.1.0
-
-# Data Validation and Serialization (for API request/response handling)
-marshmallow==3.20.1
-
-# HTTP Status Code helpers (optional, but can be useful)
+Flask==3.1.1
+Flask-Cors==4.0.0
+Flask-SocketIO==5.3.6
+greenlet==3.2.3
+h11==0.16.0
 http-status==1.0.0
-
-# WebSocket Client (useful for CLI testing of WebSocket connections)
+idna==3.10
+itsdangerous==2.2.0
+Jinja2==3.1.6
+MarkupSafe==3.0.2
+marshmallow==3.20.1
+mutagen==1.47.0
+new-package==0.0.1
+numpy==2.3.1
+packaging==25.0
+pydub==0.25.1
+PyJWT==2.8.0
+python-dotenv==1.0.0
+python-engineio==4.8.0
+python-socketio==5.8.0
+regex==2024.11.6
+requests==2.31.0
+simple-websocket==1.1.0
+six==1.17.0
+structlog==23.1.0
+tiktoken==0.9.0
+urllib3==2.5.0
 websocket-client==1.6.3
-
-# For accurate token counting in LLM context management
-tiktoken==0.7.0 # Or the latest stable version (check PyPI for latest)
-
-# NumPy for CLI testing audio generation
-numpy==1.24.3
-
-# Development and Testing Dependencies
-pytest==7.4.2
-pytest-flask==1.2.0
-black==23.7.0 # Code formatter
-flake8==6.0.0 # Linter
-
-# Optional: Redis for session storage (if needed for scaling/distributed sessions)
-# Uncomment if you decide to implement Redis for session management
-# redis==5.0.0
-# Flask-Session==0.5.0
+Werkzeug==3.1.3
+wsproto==1.2.0

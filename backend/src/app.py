@@ -193,9 +193,7 @@ def health_check():
             # For a real health check, you might make a very small, cheap request.
             # Example: audio_session_manager.llm_client.get_llm_response("ping", conversation_history=[])
             # Or a dedicated health check method if LLM API supports it.
-            # For now, we'll assume successful initialization implies basic health.
-            # A more robust check would be to call a dummy LLM prompt and assert response.
-            # For this example, we'll just check if the client object exists.
+            # For now, we'll just check if the client object exists.
             if audio_session_manager.llm_client:
                 health_status['services']['llm_client'] = 'healthy'
             else:
@@ -537,6 +535,49 @@ def on_ping(data=None):
         emit('error', {
             'message': 'Error responding to ping.'
         })
+
+
+@socketio.on('request_human_assistance')
+def on_request_human_assistance(data):
+    """Handle human assistance request from client"""
+    sid = request.sid
+    logger.info("Human assistance requested via WebSocket", session_id=sid)
+    
+    try:
+        websocket_handler.handle_request_human_assistance(sid, data or {}, socketio)
+    except Exception as e:
+        logger.error("Error handling human assistance request", 
+                    session_id=sid, error=str(e), exc_info=True)
+        emit('error', {
+            'message': 'Failed to process human assistance request. Please try again.',
+            'error_type': 'handoff_error'
+        })
+
+@socketio.on('accept_handoff')
+def on_accept_handoff(data):
+    """Handle client accepting human handoff"""
+    sid = request.sid
+    logger.info("Client accepted human handoff", session_id=sid)
+    
+    try:
+        websocket_handler.handle_request_human_assistance(sid, data or {}, socketio)
+    except Exception as e:
+        logger.error("Error processing handoff acceptance", 
+                    session_id=sid, error=str(e), exc_info=True)
+        emit('error', {
+            'message': 'Failed to complete handoff. Please try again.',
+            'error_type': 'handoff_error'
+        })
+
+@socketio.on('decline_handoff')
+def on_decline_handoff(data):
+    """Handle client declining human handoff"""
+    sid = request.sid
+    logger.info("Client declined human handoff", session_id=sid)
+    
+    emit('handoff_declined', {
+        'message': 'No problem! I\'ll continue to help you as best I can. What else can I assist you with?'
+    })
 
 
 # ===== Error Handlers =====
