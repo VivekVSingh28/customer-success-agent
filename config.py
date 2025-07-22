@@ -17,7 +17,7 @@ MURF_BASE_URL = "https://api.murf.ai/v1"
 MURF_STREAM_URL = "https://api.murf.ai/v1/speech/stream"
 
 # Default Murf TTS Voice Configuration
-MURF_DEFAULT_VOICE_ID = "en-US-natalie"
+MURF_DEFAULT_VOICE_ID = "en-UK-gabriel"  # Previously 'en-US-natalie'
 MURF_DEFAULT_SPEED = 1.0
 MURF_DEFAULT_PITCH = 0.0
 MURF_DEFAULT_VOLUME = 1.0
@@ -29,12 +29,9 @@ MURF_REQUEST_TIMEOUT = 30
 MURF_MAX_RETRIES = 3
 MURF_RETRY_DELAY_BASE = 2
 
-# --- Azure GPT 4.1 LLM Configuration ---
-# Azure GPT Endpoint URL
-AZURE_GPT_ENDPOINT = "https://models.github.ai/inference"
-
-# The model name you are deploying on Azure
-AZURE_GPT_MODEL = "openai/gpt-4.1"
+# --- OpenAI GPT LLM Configuration ---
+OPENAI_GPT_ENDPOINT = "https://api.openai.com/v1/chat/completions"
+OPENAI_GPT_MODEL = "gpt-4o"  # or "gpt-4" depending on your preference
 
 # LLM Generation Parameters (adjust these for desired response behavior)
 LLM_MAX_TOKENS = 1000
@@ -86,7 +83,7 @@ FLASK_PORT = 5000
 FLASK_CORS_ORIGINS = "*"  # Comma-separated list of allowed origins (e.g., "http://localhost:3000,https://yourfrontend.com")
 
 # --- Flask-SocketIO Configuration ---
-SOCKETIO_CORS_ORIGINS = "*"  # Comma-separated list of allowed origins for SocketIO
+SOCKETIO_CORS_ORIGINS = "http://localhost:3000"  # Comma-separated list of allowed origins for SocketIO
 SOCKETIO_ASYNC_MODE = "threading"  # Can be 'eventlet', 'gevent', 'threading'
 SOCKETIO_PING_TIMEOUT = 60  # seconds
 SOCKETIO_PING_INTERVAL = 25  # seconds
@@ -158,9 +155,9 @@ CONFIG = {
     "MURF_MAX_RETRIES": MURF_MAX_RETRIES,
     "MURF_RETRY_DELAY_BASE": MURF_RETRY_DELAY_BASE,
     
-    # Azure GPT LLM
-    "AZURE_GPT_ENDPOINT": AZURE_GPT_ENDPOINT,
-    "AZURE_GPT_MODEL": AZURE_GPT_MODEL,
+    # OpenAI GPT LLM
+    "OPENAI_GPT_ENDPOINT": OPENAI_GPT_ENDPOINT,
+    "OPENAI_GPT_MODEL": OPENAI_GPT_MODEL,
     "LLM_MAX_TOKENS": LLM_MAX_TOKENS,
     "LLM_TEMPERATURE": LLM_TEMPERATURE,
     "LLM_TOP_P": LLM_TOP_P,

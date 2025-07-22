@@ -1,0 +1,164 @@
+.audio-player {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 18px;
+  margin-top: 8px;
+  max-width: 300px;
+  min-height: 44px;
+}
+
+.play-pause-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: none;
+  background-color: #007AFF;
+  color: white;
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.play-pause-btn:hover:not(:disabled) {
+  background-color: #0056d6;
+  transform: scale(1.05);
+}
+
+.play-pause-btn:disabled {
+  background-color: #c7c7cc;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.loading-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top: 2px solid white;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.progress-container {
+  flex-grow: 1;
+  padding: 8px 0;
+  cursor: pointer;
+}
+
+.progress-track {
+  position: relative;
+  height: 4px;
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 2px;
+  overflow: visible;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #007AFF 0%, #5AC8FA 100%);
+  border-radius: 2px;
+  transition: width 0.1s ease;
+  position: relative;
+}
+
+.progress-thumb {
+  position: absolute;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  background: #007AFF;
+  border: 2px solid white;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  transition: left 0.1s ease;
+  opacity: 0;
+}
+
+.progress-container:hover .progress-thumb,
+.audio-player.playing .progress-thumb {
+  opacity: 1;
+}
+
+.time-display {
+  font-size: 11px;
+  color: #666;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  min-width: 50px;
+  text-align: right;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Different styles for user vs agent messages */
+.message.agent .audio-player {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.message.agent .time-display {
+  color: #666;
+}
+
+.message.user .audio-player {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.message.user .time-display {
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.message.user .progress-track {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.message.user .progress-fill {
+  background: linear-gradient(90deg, #ffffff 0%, rgba(255, 255, 255, 0.8) 100%);
+}
+
+.message.user .progress-thumb {
+  background: white;
+  border-color: rgba(255, 255, 255, 0.5);
+}
+
+/* Loading state */
+.audio-player.loading {
+  opacity: 0.8;
+}
+
+/* Playing state */
+.audio-player.playing .progress-thumb {
+  opacity: 1;
+}
+
+/* Responsive adjustments */
+@media (max-width: 480px) {
+  .audio-player {
+    max-width: 260px;
+    gap: 8px;
+    padding: 8px 12px;
+  }
+  
+  .play-pause-btn {
+    width: 28px;
+    height: 28px;
+    font-size: 10px;
+  }
+  
+  .time-display {
+    font-size: 10px;
+    min-width: 45px;
+  }
+} 
